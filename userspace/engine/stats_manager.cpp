@@ -65,6 +65,7 @@ void stats_manager::format(
 	}
 }
 
+// todo(XXX): make this thread safe
 void stats_manager::on_event(const falco_rule& rule)
 {
 	if (m_by_rule_id.size() <= rule.id)

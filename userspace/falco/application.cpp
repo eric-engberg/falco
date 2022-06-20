@@ -47,7 +47,7 @@ application::state::state()
 	config = std::make_shared<falco_configuration>();
 	outputs = std::make_shared<falco_outputs>();
 	engine = std::make_shared<falco_engine>();
-	inspector = std::make_shared<sinsp>();
+	offline_inspector = std::make_shared<sinsp>();
 }
 
 application::state::~state()
@@ -130,9 +130,9 @@ bool application::run(std::string &errstr, bool &restart)
 		std::bind(&application::print_ignored_events, this),
 		std::bind(&application::print_plugin_info, this),
 		std::bind(&application::list_plugins, this),
-		std::bind(&application::init_inspector, this),
 		std::bind(&application::load_plugins, this),
 		std::bind(&application::select_event_sources, this),
+		std::bind(&application::init_inspector, this),
 		std::bind(&application::init_falco_engine, this),
 		std::bind(&application::list_fields, this),
 		std::bind(&application::load_rules_files, this),
@@ -146,12 +146,10 @@ bool application::run(std::string &errstr, bool &restart)
 		std::bind(&application::start_grpc_server, this),
 		std::bind(&application::start_webserver, this),
 #endif
-		std::bind(&application::open_inspector, this),
 		std::bind(&application::process_events, this)
 	};
 
 	std::list<std::function<bool(std::string &)>> teardown_steps = {
-		std::bind(&application::close_inspector, this, _1),
 		std::bind(&application::unregister_signal_handlers, this, _1),
 #ifndef MINIMAL_BUILD
 		std::bind(&application::stop_grpc_server, this, _1),

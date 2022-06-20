@@ -149,7 +149,7 @@ application::run_result application::init_inspector()
 				if (!is_capture_mode())
 				{
 					plugin = nullptr;
-					if (is_input_plugin || (p->caps() & CAP_EXTRACTION) && p->is_source_compatible(src))
+					if (is_input_plugin || (p->caps() & CAP_EXTRACTION && p->is_source_compatible(src)))
 					{
 						plugin = inspector->register_plugin(config.m_library_path);
 						if (is_input_plugin)
@@ -162,7 +162,7 @@ application::run_result application::init_inspector()
 				// if plugin is registered in this inspector (always true in capture mode)
 				if (plugin)
 				{
-					if (!res->init(config.m_init_config, err))
+					if (!plugin->init(config.m_init_config, err))
 					{
 						return run_result::fatal(err);
 					}

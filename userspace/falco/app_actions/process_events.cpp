@@ -33,40 +33,103 @@ limitations under the License.
 
 using namespace falco::app;
 
+static void open_inspector(std::shared_ptr<sinsp> inspector, const std::string& source, bool userspace)
+{
+	if (source == falco_common::syscall_source)
+	{
+		try
+		{
+			// open_udig() is the underlying method used in the capture code to parse userspace events from the kernel.
+			//
+			// Falco uses a ptrace(2) based userspace implementation.
+			// Regardless of the implementation, the underlying method remains the same.
+			if(userspace)
+			{
+				inspector->open_udig();
+			}
+			else
+			{
+				inspector->open();
+			}
+		}
+		catch(sinsp_exception &e)
+		{
+			// If syscall input source is enabled and not through userspace instrumentation
+			if (!userspace)
+			{
+				// Try to insert the Falco kernel module
+				if(system("modprobe " DRIVER_NAME " > /dev/null 2> /dev/null"))
+				{
+					falco_logger::log(LOG_ERR, "Unable to load the driver.\n");
+				}
+				inspector->open();
+			}
+			throw e;
+		}
+	}
+	else
+	{
+		inspector->open();
+	}
+}
+
+// todo: pass inspector as parameter
 //
 // Event processing loop
 //
-application::run_result application::do_inspect(syscall_evt_drop_mgr &sdropmgr,
-				 uint64_t duration_to_tot_ns,
-				 uint64_t &num_evts)
+application::run_result application::do_inspect(
+	const std::string& source,
+	syscall_evt_drop_mgr &sdropmgr,
+	uint64_t duration_to_tot_ns,
+	uint64_t &num_evts)
 {
 	int32_t rc;
 	sinsp_evt* ev;
 	StatsFileWriter writer;
 	uint64_t duration_start = 0;
 	uint32_t timeouts_since_last_success_or_msg = 0;
-	std::size_t source_idx;
+	std::size_t source_idx = 0;
+	std::shared_ptr<sinsp> inspector = nullptr;
 	bool source_idx_found = false;
+	bool is_capture_mode = source.empty();
+	bool is_syscall_source = source == falco_common::syscall_source;
+	bool syscall_source_idx = m_state->source_engine_idx[falco_common::syscall_source];
+	
+	if (!is_capture_mode)
+	{
+		source_idx = m_state->source_engine_idx[source];
+		inspector = m_state->source_inspectors[source];
+	}
+	else
+	{
+		inspector = m_state->offline_inspector;
+	}
 
+	// reset event counter
 	num_evts = 0;
 
-	sdropmgr.init(m_state->inspector,
-		      m_state->outputs,
-		      m_state->config->m_syscall_evt_drop_actions,
-		      m_state->config->m_syscall_evt_drop_threshold,
-		      m_state->config->m_syscall_evt_drop_rate,
-		      m_state->config->m_syscall_evt_drop_max_burst,
-		      m_state->config->m_syscall_evt_simulate_drops);
-
-	if (m_options.stats_filename != "")
+	// init drop manager if we are inspecting syscalls
+	if (is_syscall_source)
 	{
-		string errstr;
-
-		if (!writer.init(m_state->inspector, m_options.stats_filename, m_options.stats_interval, errstr))
-		{
-			return run_result::fatal(errstr);
-		}
+		sdropmgr.init(inspector,
+			m_state->outputs,
+			m_state->config->m_syscall_evt_drop_actions,
+			m_state->config->m_syscall_evt_drop_threshold,
+			m_state->config->m_syscall_evt_drop_rate,
+			m_state->config->m_syscall_evt_drop_max_burst,
+			m_state->config->m_syscall_evt_simulate_drops);
 	}
+
+	// todo(XXX): skip for now and solve this later (not thread safe)
+	// if (m_options.stats_filename != "")
+	// {
+	// 	string errstr;
+
+	// 	if (!writer.init(inspector, m_options.stats_filename, m_options.stats_interval, errstr))
+	// 	{
+	// 		return run_result::fatal(errstr);
+	// 	}
+	// }
 
 	//
 	// Loop through the events
@@ -74,34 +137,42 @@ application::run_result application::do_inspect(syscall_evt_drop_mgr &sdropmgr,
 	while(1)
 	{
 
-		rc = m_state->inspector->next(&ev);
+		rc = inspector->next(&ev);
 
-		writer.handle();
+		// todo(XXX): skip for now and solve this later (not thread safe)
+		// writer.handle();
 
-		if(m_state->reopen_outputs)
+		// todo(XXX): not thread safe (we need to do this on the main thread and)
+		//            sync with an atomic
+		/* if(m_state->reopen_outputs)
 		{
 			falco_logger::log(LOG_INFO, "SIGUSR1 received, reopening outputs...\n");
 			m_state->outputs->reopen_outputs();
 			m_state->reopen_outputs = false;
-		}
+		} */ 
 
-		if(m_state->terminate)
+		// todo(XXX): make these thread safe
+		/* if(m_state->terminate)
 		{
+			// todo(XXX): avoid logging in each trhead (use an atomic to sync)
 			falco_logger::log(LOG_INFO, "SIGINT received, exiting...\n");
 			break;
 		}
 		else if (m_state->restart)
 		{
+			// todo(XXX): avoid logging in each trhead
 			falco_logger::log(LOG_INFO, "SIGHUP received, restarting...\n");
 			break;
 		}
-		else if(rc == SCAP_TIMEOUT)
+		else */
+		
+		if(rc == SCAP_TIMEOUT)
 		{
 			if(unlikely(ev == nullptr))
 			{
 				timeouts_since_last_success_or_msg++;
 				if(timeouts_since_last_success_or_msg > m_state->config->m_syscall_evt_timeout_max_consecutives
-					&& is_syscall_source_enabled())
+					&& is_syscall_source)
 				{
 					std::string rule = "Falco internal: timeouts notification";
 					std::string msg = rule + ". " + std::to_string(m_state->config->m_syscall_evt_timeout_max_consecutives) + " consecutive timeouts without event.";
@@ -131,7 +202,7 @@ application::run_result application::do_inspect(syscall_evt_drop_mgr &sdropmgr,
 			//
 			// Event read error.
 			//
-			return run_result::fatal(m_state->inspector->getlasterr());
+			return run_result::fatal(inspector->getlasterr());
 		}
 
 		// Reset the timeouts counter, Falco successfully got an event to process
@@ -148,7 +219,7 @@ application::run_result application::do_inspect(syscall_evt_drop_mgr &sdropmgr,
 			}
 		}
 
-		if(!sdropmgr.process_event(m_state->inspector, ev))
+		if(is_syscall_source && !sdropmgr.process_event(inspector, ev))
 		{
 			return run_result::fatal("Drop manager internal error");
 		}
@@ -158,16 +229,21 @@ application::run_result application::do_inspect(syscall_evt_drop_mgr &sdropmgr,
 			continue;
 		}
 
-		source_idx = m_state->syscall_source_idx;
-		if (ev->get_type() == PPME_PLUGINEVENT_E)
+		// if we are in live mode, we already have the engine idx
+		// for the given source
+		if (is_capture_mode)
 		{
-			// note: here we can assume that the source index will be the same
-			// in both the falco engine and the sinsp plugin manager. See the
-			// comment in load_plugins.cpp for more details.
-			source_idx = m_state->inspector->get_plugin_manager()->source_idx_by_plugin_id(*(int32_t *)ev->get_param(0)->m_val, source_idx_found);
-			if (!source_idx_found)
+			source_idx = syscall_source_idx;
+			if (ev->get_type() == PPME_PLUGINEVENT_E)
 			{
-				return run_result::fatal("Unknown plugin ID in inspector: " + std::to_string(*(int32_t *)ev->get_param(0)->m_val));
+				// note: here we can assume that the source index will be the same
+				// in both the falco engine and the sinsp plugin manager. See the
+				// comment in load_plugins.cpp for more details.
+				source_idx = inspector->get_plugin_manager()->source_idx_by_plugin_id(*(int32_t *)ev->get_param(0)->m_val, source_idx_found);
+				if (!source_idx_found)
+				{
+					return run_result::fatal("Unknown plugin ID in inspector: " + std::to_string(*(int32_t *)ev->get_param(0)->m_val));
+				}
 			}
 		}
 
@@ -188,7 +264,7 @@ application::run_result application::do_inspect(syscall_evt_drop_mgr &sdropmgr,
 	return run_result::ok();
 }
 
-application::run_result application::process_events()
+application::run_result application::process_source_events(std::string source)
 {
 	syscall_evt_drop_mgr sdropmgr;
 	// Used for stats
@@ -196,39 +272,158 @@ application::run_result application::process_events()
 	scap_stats cstats;
 	uint64_t num_evts = 0;
 	run_result ret;
+	bool is_capture_mode = source.empty();
 
 	duration = ((double)clock()) / CLOCKS_PER_SEC;
 
-	ret = do_inspect(sdropmgr,
+	ret = do_inspect(source, sdropmgr,
 					uint64_t(m_options.duration_to_tot*ONE_SECOND_IN_NS),
 					num_evts);
 
 	duration = ((double)clock()) / CLOCKS_PER_SEC - duration;
 
-	m_state->inspector->get_capture_stats(&cstats);
+	if (is_capture_mode)
+	{
+		m_state->offline_inspector->get_capture_stats(&cstats);
+	}
+	else
+	{
+		m_state->source_inspectors[source]->get_capture_stats(&cstats);
+	}
 
 	if(m_options.verbose)
 	{
-		fprintf(stderr, "Driver Events:%" PRIu64 "\nDriver Drops:%" PRIu64 "\n",
+		if (source == falco_common::syscall_source)
+		{
+			fprintf(stderr, "Driver Events:%" PRIu64 "\nDriver Drops:%" PRIu64 "\n",
 			cstats.n_evts,
 			cstats.n_drops);
+		}
 
+		if (!is_capture_mode)
+		{
+			fprintf(stderr, "(%s) ", source.c_str());
+		}
 		fprintf(stderr, "Elapsed time: %.3lf, Captured Events: %" PRIu64 ", %.2lf eps\n",
 			duration,
 			num_evts,
 			num_evts / duration);
 	}
 
-	// Honor -M also when using a trace file.
-	// Since inspection stops as soon as all events have been consumed
-	// just await the given duration is reached, if needed.
-	if(is_capture_mode() && m_options.duration_to_tot > 0)
+	if (source == falco_common::syscall_source)
 	{
-		std::this_thread::sleep_for(std::chrono::seconds(m_options.duration_to_tot));
+		sdropmgr.print_stats();
+	}
+
+	m_state->source_inspectors[source]->close();
+
+	return ret;
+}
+
+application::run_result application::process_events()
+{
+	// Notify engine that we finished loading and enabling all rules
+	m_state->engine->complete_rule_loading();
+
+	if(is_capture_mode())
+	{
+		// Try to open the trace file as a
+		// capture file first.
+		try {
+			m_state->offline_inspector->open(m_options.trace_filename);
+			falco_logger::log(LOG_INFO, "Reading system call events from file: " + m_options.trace_filename + "\n");
+		}
+		catch(sinsp_exception &e)
+		{
+			return run_result::fatal("Could not open trace filename " + m_options.trace_filename + " for reading: " + e.what());
+		}
+		
+		auto ret = process_source_events("");
+
+		// Honor -M also when using a trace file.
+		// Since inspection stops as soon as all events have been consumed
+		// just await the given duration is reached, if needed.
+		if(m_options.duration_to_tot > 0)
+		{
+			std::this_thread::sleep_for(std::chrono::seconds(m_options.duration_to_tot));
+		}
+
+		return ret;
+	}
+
+	std::vector<std::thread> source_threads;
+	std::vector<run_result> source_threads_res;
+	for (const auto& source: m_state->enabled_sources)
+	{
+		auto& inspector = m_state->source_inspectors[source];
+		auto source_idx = source_threads_res.size();
+		source_threads_res.push_back(run_result::ok());
+
+		try 
+		{
+			open_inspector(inspector, source, m_options.userspace);
+			if(source == falco_common::syscall_source && !m_options.all_events)
+			{
+				inspector->start_dropping_mode(1);
+			}
+		}
+		catch(std::exception &e)
+		{
+			source_threads_res[source_idx] = run_result::fatal(e.what());
+		}
+		
+		if (!source_threads_res[source_idx].proceed)
+		{
+			break;
+		}
+
+		falco_logger::log(LOG_INFO, "Reading events from source: " + source+ "\n");
+		source_threads.push_back(std::thread([this, &source, &source_threads_res, &source_idx]()
+			{
+				try 
+				{
+					source_threads_res[source_idx] = process_source_events(source);
+				}
+				catch(std::exception &e)
+				{
+					source_threads_res[source_idx] = run_result::fatal(e.what());
+				}
+			}));
+	}
+	
+	// wait for all threads to be joined.
+	// if a thread terminates with an error, we trigger the app termination
+	// to force all other event streams to termiante too.
+	// We accomulate the errors in a single run_result.
+	auto res = run_result::ok();
+	size_t joined = 0;
+	while (joined < source_threads.size())
+	{
+		for (size_t i = 0; i < source_threads.size(); i++)
+		{
+			if (source_threads[i].joinable())
+			{
+				source_threads[i].join();
+				if (!source_threads_res[i].success)
+				{
+					if (res.success)
+					{
+						res = source_threads_res[i];
+					}
+					else
+					{
+						// concatenate errors coming from different sources
+						res.errstr += "\n" + source_threads_res[i].errstr;
+					}
+
+					// trigger termination
+					terminate();
+				}
+				joined++;
+			}
+		}
 	}
 
 	m_state->engine->print_stats();
-	sdropmgr.print_stats();
-
-	return ret;
+	return res;
 }

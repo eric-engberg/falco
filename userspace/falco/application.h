@@ -68,18 +68,26 @@ private:
 		std::shared_ptr<falco_configuration> config;
 		std::shared_ptr<falco_outputs> outputs;
 		std::shared_ptr<falco_engine> engine;
-		std::shared_ptr<sinsp> inspector;
+
+		// used to load all plugins to get their info.
+		// if in capture mode, this is used to open and read the capture file.
+		std::shared_ptr<sinsp> offline_inspector;
+
+		// used to open event sources in live mode
+		std::vector<std::shared_ptr<sinsp>> live_inspectors;
+
+		// the set of all the event sources enabled for live mode
 		std::set<std::string> enabled_sources;
 
-		// The event source index that correspond to "syscall"
-		std::size_t syscall_source_idx;
+		// todo: create a struct with a single map
+		// This is a map from event source to filtercheck lists.
+		std::map<std::string, filter_check_list> source_filterchecks;
 
-		// All filterchecks created by plugins go in this
-		// list. If we ever support multiple event sources at
-		// the same time, this, and the factories created in
-		// init_inspector/load_plugins, will have to be a map
-		// from event source to filtercheck list.
-		std::map<std::string, filter_check_list> plugin_filter_checks;
+		// This is a map from event source to inspectors
+		std::map<std::string, std::shared_ptr<sinsp>> source_inspectors;
+
+		// This is a map from event source to their index in the engine
+		std::map<std::string, std::size_t> source_engine_idx;
 
 		std::map<string,uint64_t> required_engine_versions;
 
@@ -150,7 +158,6 @@ private:
 	run_result load_config();
 	run_result load_plugins();
 	run_result load_rules_files();
-	run_result open_inspector();
 	run_result print_help();
 	run_result print_ignored_events();
 	run_result print_plugin_info();
@@ -179,9 +186,13 @@ private:
 	void check_for_ignored_events();
 	void print_all_ignored_events();
 	void format_plugin_info(std::shared_ptr<sinsp_plugin> p, std::ostream& os) const;
-	run_result do_inspect(syscall_evt_drop_mgr &sdropmgr,
-			    uint64_t duration_to_tot_ns,
-			    uint64_t &num_events);
+	bool add_source_to_engine(const std::string& src, std::string& err);
+	run_result do_inspect(
+		const std::string& source,
+		syscall_evt_drop_mgr &sdropmgr,
+		uint64_t duration_to_tot_ns,
+		uint64_t &num_events);
+	run_result process_source_events(std::string source);
 	
 	inline bool is_syscall_source_enabled() const 
 	{
@@ -192,6 +203,18 @@ private:
 	inline bool is_capture_mode() const 
 	{
 		return !m_options.trace_filename.empty();
+	}
+
+	inline const falco_configuration::plugin_config& get_plugin_config(const std::string& name) const
+	{
+		for(const auto &pc : m_state->config->m_plugins)
+		{
+			if (pc.m_name == name)
+			{
+				return pc;
+			}
+		}
+		throw falco_exception("can't find config for plugin: " + name);
 	}
 
 	std::unique_ptr<state> m_state;

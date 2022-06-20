@@ -18,6 +18,7 @@ limitations under the License.
 
 using namespace falco::app;
 
+// todo(XXX): should we put this before load_rules_files?
 application::run_result application::validate_rules_files()
 {
 	if(m_options.validate_rules_filenames.size() > 0)
