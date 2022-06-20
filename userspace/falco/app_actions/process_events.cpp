@@ -339,7 +339,7 @@ application::run_result application::process_events()
 	std::vector<std::thread> source_threads;
 	std::vector<run_result> source_threads_res;
 	auto res = run_result::ok();
-	for (auto source: m_state->enabled_sources)
+	for (auto source : m_state->enabled_sources)
 	{
 		auto inspector = m_state->source_inspectors[source];
 		auto source_idx = source_threads_res.size();
@@ -365,20 +365,29 @@ application::run_result application::process_events()
 			break;
 		}
 
-		source_threads.push_back(std::thread([this, inspector, source, &source_threads_res, &source_idx]()
+		auto run = [this, inspector, source, &source_threads_res, &source_idx]()
+		{
+			try 
 			{
-				try 
-				{
-					source_threads_res[source_idx] = process_source_events(inspector, source);
-				}
-				catch(std::exception &e)
-				{
-					source_threads_res[source_idx] = run_result::fatal(e.what());
-				}
-			}));
+				source_threads_res[source_idx] = process_source_events(inspector, source);
+			}
+			catch(std::exception &e)
+			{
+				source_threads_res[source_idx] = run_result::fatal(e.what());
+			}
+		};
+
+		if (m_state->enabled_sources.size() == 1)
+		{
+			run();
+		}
+		else
+		{
+			source_threads.push_back(std::thread(run));
+		}
 	}
 	
-	// wait for all threads to be joined.
+	// wait for all the spawned threads.
 	// if a thread terminates with an error, we trigger the app termination
 	// to force all other event streams to termiante too.
 	// We accomulate the errors in a single run_result.
