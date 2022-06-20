@@ -67,7 +67,8 @@ void application::terminate()
 {
 	if(m_state != nullptr)
 	{
-		m_state->terminate = true;
+		m_state->terminate.store(true, std::memory_order_release);
+		falco_logger::log(LOG_INFO, "SIGINT received, exiting...\n");
 	}
 }
 
@@ -75,7 +76,8 @@ void application::reopen_outputs()
 {
 	if(m_state != nullptr)
 	{
-		m_state->reopen_outputs = true;
+		// todo(XXX): finish this
+		m_state->reopen_outputs.store(true, std::memory_order_release);
 	}
 }
 
@@ -83,7 +85,8 @@ void application::restart()
 {
 	if(m_state != nullptr)
 	{
-		m_state->restart = true;
+		m_state->restart.store(true, std::memory_order_release);
+		falco_logger::log(LOG_INFO, "SIGHUP received, restarting...\n");
 	}
 }
 

@@ -185,7 +185,9 @@ application::run_result application::init_inspector()
 	// check if some plugin with field extraction cap is not used
 	for (const auto& p : all_plugins)
 	{
-		if(p->caps() & CAP_EXTRACTION && used.find(p->name()) == used.end())
+		if(used.find(p->name()) == used.end() 
+			&& p->caps() & CAP_EXTRACTION
+			&& !(p->caps() & CAP_SOURCING && p->is_source_compatible(p->event_source())))
 		{
 			return run_result::fatal("Plugin '" + p->name()
 				+ "' has field extraction capability but is not compatible with any enabled event source");

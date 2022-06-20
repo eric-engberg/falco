@@ -152,21 +152,15 @@ application::run_result application::do_inspect(
 		} */ 
 
 		// todo(XXX): make these thread safe
-		/* if(m_state->terminate)
+		if(m_state->terminate.load(std::memory_order_acquire))
 		{
-			// todo(XXX): avoid logging in each trhead (use an atomic to sync)
-			falco_logger::log(LOG_INFO, "SIGINT received, exiting...\n");
 			break;
 		}
-		else if (m_state->restart)
+		else if (m_state->restart.load(std::memory_order_acquire))
 		{
-			// todo(XXX): avoid logging in each trhead
-			falco_logger::log(LOG_INFO, "SIGHUP received, restarting...\n");
 			break;
 		}
-		else */
-		
-		if(rc == SCAP_TIMEOUT)
+		else if(rc == SCAP_TIMEOUT)
 		{
 			if(unlikely(ev == nullptr))
 			{
@@ -353,6 +347,7 @@ application::run_result application::process_events()
 
 	std::vector<std::thread> source_threads;
 	std::vector<run_result> source_threads_res;
+	auto res = run_result::ok();
 	for (const auto& source: m_state->enabled_sources)
 	{
 		auto& inspector = m_state->source_inspectors[source];
@@ -372,12 +367,13 @@ application::run_result application::process_events()
 			source_threads_res[source_idx] = run_result::fatal(e.what());
 		}
 		
-		if (!source_threads_res[source_idx].proceed)
+		if (!source_threads_res[source_idx].success)
 		{
+			res = source_threads_res[source_idx];
 			break;
 		}
 
-		falco_logger::log(LOG_INFO, "Reading events from source: " + source+ "\n");
+		falco_logger::log(LOG_INFO, "Reading events from source: " + source + "\n");
 		source_threads.push_back(std::thread([this, &source, &source_threads_res, &source_idx]()
 			{
 				try 
@@ -395,30 +391,23 @@ application::run_result application::process_events()
 	// if a thread terminates with an error, we trigger the app termination
 	// to force all other event streams to termiante too.
 	// We accomulate the errors in a single run_result.
-	auto res = run_result::ok();
 	size_t joined = 0;
+	bool forced_termination = false;
 	while (joined < source_threads.size())
 	{
+		if (!res.success && !forced_termination)
+		{
+			// todo(XXX): maybe use another signal, not the app-level one
+			terminate();
+			forced_termination = true;
+		}
+
 		for (size_t i = 0; i < source_threads.size(); i++)
 		{
 			if (source_threads[i].joinable())
 			{
 				source_threads[i].join();
-				if (!source_threads_res[i].success)
-				{
-					if (res.success)
-					{
-						res = source_threads_res[i];
-					}
-					else
-					{
-						// concatenate errors coming from different sources
-						res.errstr += "\n" + source_threads_res[i].errstr;
-					}
-
-					// trigger termination
-					terminate();
-				}
+				res = res.merge(source_threads_res[i]);
 				joined++;
 			}
 		}
