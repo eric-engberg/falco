@@ -20,18 +20,22 @@ using namespace falco::app;
 
 application::run_result application::select_event_sources()
 {
-	for(const auto &src : m_options.disable_sources)
+	// event sources selection is relevant only in live mode
+	if (!is_capture_mode())
 	{
-		if (m_state->enabled_sources.find(src) == m_state->enabled_sources.end())
+		for(const auto &src : m_options.disable_sources)
 		{
-			return run_result::fatal("Attempted disabling unknown event source: " + src);
+			if (m_state->enabled_sources.find(src) == m_state->enabled_sources.end())
+			{
+				return run_result::fatal("Attempted disabling unknown event source: " + src);
+			}
+			m_state->enabled_sources.erase(src);
 		}
-		m_state->enabled_sources.erase(src);
-	}
 
-	if(m_state->enabled_sources.empty())
-	{
-		return run_result::fatal("At least one event source needs to be enabled");
+		if(m_state->enabled_sources.empty())
+		{
+			return run_result::fatal("At least one event source needs to be enabled");
+		}
 	}
 	
 	return run_result::ok();
