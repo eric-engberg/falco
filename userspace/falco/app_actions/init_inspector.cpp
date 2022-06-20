@@ -125,6 +125,7 @@ application::run_result application::init_inspector()
 			inspector = std::shared_ptr<sinsp>(new sinsp());
 			m_state->live_inspectors.push_back(inspector);
 		}
+		m_state->source_inspectors[src] = inspector;
 
 		// handle syscall and plugin sources differently
 		// todo(jasondellaluce): change this once we support extracting plugin fields from syscalls
