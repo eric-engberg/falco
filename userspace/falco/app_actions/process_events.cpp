@@ -63,6 +63,7 @@ static void open_inspector(std::shared_ptr<sinsp> inspector, const std::string& 
 					falco_logger::log(LOG_ERR, "Unable to load the driver.\n");
 				}
 				inspector->open();
+				return;
 			}
 			throw e;
 		}
@@ -78,6 +79,7 @@ static void open_inspector(std::shared_ptr<sinsp> inspector, const std::string& 
 // Event processing loop
 //
 application::run_result application::do_inspect(
+	std::shared_ptr<sinsp> inspector,
 	const std::string& source,
 	syscall_evt_drop_mgr &sdropmgr,
 	uint64_t duration_to_tot_ns,
@@ -89,7 +91,6 @@ application::run_result application::do_inspect(
 	uint64_t duration_start = 0;
 	uint32_t timeouts_since_last_success_or_msg = 0;
 	std::size_t source_idx = 0;
-	std::shared_ptr<sinsp> inspector = nullptr;
 	bool source_idx_found = false;
 	bool is_capture_mode = source.empty();
 	bool is_syscall_source = source == falco_common::syscall_source;
@@ -98,11 +99,6 @@ application::run_result application::do_inspect(
 	if (!is_capture_mode)
 	{
 		source_idx = m_state->source_engine_idx[source];
-		inspector = m_state->source_inspectors[source];
-	}
-	else
-	{
-		inspector = m_state->offline_inspector;
 	}
 
 	// reset event counter
@@ -258,7 +254,7 @@ application::run_result application::do_inspect(
 	return run_result::ok();
 }
 
-application::run_result application::process_source_events(std::string source)
+application::run_result application::process_source_events(std::shared_ptr<sinsp> inspector, std::string source)
 {
 	syscall_evt_drop_mgr sdropmgr;
 	// Used for stats
@@ -270,20 +266,13 @@ application::run_result application::process_source_events(std::string source)
 
 	duration = ((double)clock()) / CLOCKS_PER_SEC;
 
-	ret = do_inspect(source, sdropmgr,
+	ret = do_inspect(inspector, source, sdropmgr,
 					uint64_t(m_options.duration_to_tot*ONE_SECOND_IN_NS),
 					num_evts);
 
 	duration = ((double)clock()) / CLOCKS_PER_SEC - duration;
 
-	if (is_capture_mode)
-	{
-		m_state->offline_inspector->get_capture_stats(&cstats);
-	}
-	else
-	{
-		m_state->source_inspectors[source]->get_capture_stats(&cstats);
-	}
+	inspector->get_capture_stats(&cstats);
 
 	if(m_options.verbose)
 	{
@@ -309,11 +298,13 @@ application::run_result application::process_source_events(std::string source)
 		sdropmgr.print_stats();
 	}
 
-	m_state->source_inspectors[source]->close();
+	falco_logger::log(LOG_INFO, "Closing event source: " + source + "\n");
+	inspector->close();
 
 	return ret;
 }
 
+// todo(XXX): if only one source is active then run it on main thread
 application::run_result application::process_events()
 {
 	// Notify engine that we finished loading and enabling all rules
@@ -332,7 +323,7 @@ application::run_result application::process_events()
 			return run_result::fatal("Could not open trace filename " + m_options.trace_filename + " for reading: " + e.what());
 		}
 		
-		auto ret = process_source_events("");
+		auto ret = process_source_events(m_state->offline_inspector, "");
 
 		// Honor -M also when using a trace file.
 		// Since inspection stops as soon as all events have been consumed
@@ -348,14 +339,15 @@ application::run_result application::process_events()
 	std::vector<std::thread> source_threads;
 	std::vector<run_result> source_threads_res;
 	auto res = run_result::ok();
-	for (const auto& source: m_state->enabled_sources)
+	for (auto source: m_state->enabled_sources)
 	{
-		auto& inspector = m_state->source_inspectors[source];
+		auto inspector = m_state->source_inspectors[source];
 		auto source_idx = source_threads_res.size();
 		source_threads_res.push_back(run_result::ok());
 
 		try 
 		{
+			falco_logger::log(LOG_INFO, "Opening event source: " + source + "\n");
 			open_inspector(inspector, source, m_options.userspace);
 			if(source == falco_common::syscall_source && !m_options.all_events)
 			{
@@ -373,12 +365,11 @@ application::run_result application::process_events()
 			break;
 		}
 
-		falco_logger::log(LOG_INFO, "Reading events from source: " + source + "\n");
-		source_threads.push_back(std::thread([this, &source, &source_threads_res, &source_idx]()
+		source_threads.push_back(std::thread([this, inspector, source, &source_threads_res, &source_idx]()
 			{
 				try 
 				{
-					source_threads_res[source_idx] = process_source_events(source);
+					source_threads_res[source_idx] = process_source_events(inspector, source);
 				}
 				catch(std::exception &e)
 				{

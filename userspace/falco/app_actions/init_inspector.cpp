@@ -110,7 +110,6 @@ application::run_result application::init_inspector()
 	
 	for (const auto &src : m_state->enabled_sources)
 	{
-		auto& filterchecks = m_state->source_filterchecks[src];
 		std::shared_ptr<sinsp> inspector = nullptr;
 
 		// choose an inspector
@@ -132,10 +131,11 @@ application::run_result application::init_inspector()
 		if (src == falco_common::syscall_source)
 		{
 			init_syscall_inspector(inspector, m_options);
-			filterchecks = g_filterlist;
 		}
 		else
 		{
+			auto& filterchecks = m_state->source_filterchecks[src];
+			
 			// load and init all plugins compatible with this inspector
 			// (will be all plugins if in capture mode, in which case we just need to init them)
 			for (const auto& p : all_plugins)
@@ -190,7 +190,7 @@ application::run_result application::init_inspector()
 			&& !(p->caps() & CAP_SOURCING && p->is_source_compatible(p->event_source())))
 		{
 			return run_result::fatal("Plugin '" + p->name()
-				+ "' has field extraction capability but is not compatible with any enabled event source");
+				+ "' has field extraction capability but is not compatible with any known event source");
 		}
 	}
 

@@ -213,11 +213,12 @@ private:
 	void format_plugin_info(std::shared_ptr<sinsp_plugin> p, std::ostream& os) const;
 	bool add_source_to_engine(const std::string& src, std::string& err);
 	run_result do_inspect(
+		std::shared_ptr<sinsp> inspector,
 		const std::string& source,
 		syscall_evt_drop_mgr &sdropmgr,
 		uint64_t duration_to_tot_ns,
 		uint64_t &num_events);
-	run_result process_source_events(std::string source);
+	run_result process_source_events(std::shared_ptr<sinsp> inspector, std::string source);
 	
 	inline bool is_syscall_source_enabled() const 
 	{

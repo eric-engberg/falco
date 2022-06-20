@@ -54,12 +54,24 @@ void application::configure_output_format()
 bool application::add_source_to_engine(const std::string& src, std::string& err)
 {
 	auto &inspector = m_state->source_inspectors[src];
-	auto &filterchecks = m_state->source_filterchecks[src];
 
 	// Factories that can create filters/formatters for the event source
 	// and add it in the engine
-	std::shared_ptr<gen_event_filter_factory> filter_factory(new sinsp_filter_factory(inspector.get(), filterchecks));
-	std::shared_ptr<gen_event_formatter_factory> formatter_factory(new sinsp_evt_formatter_factory(inspector.get(), filterchecks));
+	std::shared_ptr<gen_event_filter_factory> filter_factory = nullptr;
+	std::shared_ptr<gen_event_formatter_factory> formatter_factory = nullptr;
+
+	if (src == falco_common::syscall_source)
+	{
+		filter_factory = std::shared_ptr<gen_event_filter_factory>(new sinsp_filter_factory(inspector.get()));
+		formatter_factory = std::shared_ptr<gen_event_formatter_factory>(new sinsp_evt_formatter_factory(inspector.get()));
+	}
+	else
+	{
+		auto &filterchecks = m_state->source_filterchecks[src];
+		filter_factory = std::shared_ptr<gen_event_filter_factory>(new sinsp_filter_factory(inspector.get(), filterchecks));
+		formatter_factory = std::shared_ptr<gen_event_formatter_factory>(new sinsp_evt_formatter_factory(inspector.get(), filterchecks));
+	}
+
 	if(m_state->config->m_json_output)
 	{
 		formatter_factory->set_output_format(gen_event_formatter::OF_JSON);
