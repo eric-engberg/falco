@@ -19,6 +19,31 @@ limitations under the License.
 
 using namespace falco::app;
 
+// todo(XXX): this is complicated. I think this needs to be split in multiple parts
+// 1) load plugins and get all the event sources and add them to the engine
+// 2) create one inspector for each event source and attach all the compatible
+//    extractors to it
+// 3) not sure when to create all the filtercheck lists, maybe during step 2)
+//
+// issue: for scap files, the source index is dictated by the inspector, whereas
+//        for live mode the source index is dictated by Falco (need to match it against the engine idx)
+//           -> there should be a mapping engine src idx -> inspector idx
+
+// plan:
+// 1) load all plugins, populate the event source list and the list of compatible (DONE)
+//    extraction plugin for each source (throw errors and stuff).
+//    populate list of std::vector<falco_engine::plugin_version_requirement> (maybe bundle them in a struct containing also the compatible extract sources)
+// 2) select/enable/disable event sources (DONE)
+// 3) init inspectors: Create inspectors(1 for capture mode, N for live mode) and cofig them.
+//                     Populate list of filterchecks for each event source (decide which inspector retain them)
+//					   Perform source extraction compat checks (DONE)
+// 4) init_engine: add filtercheck lists for each source
+// 5) list fields: (DONE)
+// 6) ... -> validate sources: use the pre-populated list of :plugin_version_requirement
+// 7) ... -> open inspectors: 1 for capture mode, N for live mode
+// 8) process_events: spawn a thread for each open inspector. Use main thread if capture mode or just 1 live source.
+//                    get rid of close_inspector action, close each inspector in thread and join with all threads (if any).
+// 9) ... -> done
 application::run_result application::load_plugins()
 {
 #ifdef MUSL_OPTIMIZED
@@ -28,116 +53,29 @@ application::run_result application::load_plugins()
 	}
 #endif
 
-	// The only enabled event source is syscall by default
+	// Initialize set of enabled event source. 
+	// By default, the set includes the 'syscall' event source
 	m_state->enabled_sources = {falco_common::syscall_source};
 
-	std::string err = "";
-	std::shared_ptr<sinsp_plugin> loaded_plugin = nullptr;
+	// Initialize the offline inspector. This is used to load all the configured
+	// plugins in order to have them available everytime we need to access
+	// their static info. If Falco is in capture mode, this inspector is also
+	// used to open and read the trace file
+	m_state->offline_inspector.reset(new sinsp());
+
+	// Load all the configured plugins in the offline inspector
 	for(auto &p : m_state->config->m_plugins)
 	{
 		falco_logger::log(LOG_INFO, "Loading plugin (" + p.m_name + ") from file " + p.m_library_path + "\n");
-		auto plugin = m_state->inspector->register_plugin(p.m_library_path);
-		if (!plugin->init(p.m_init_config, err))
-		{
-			return run_result::fatal(err);
-		}
 
+		// Load the plugin without initializing it
+		auto plugin = m_state->offline_inspector->register_plugin(p.m_library_path);
+
+		// If the plugin supports event sourcing capability, add it to the set
+		// of enabled event sources
 		if(plugin->caps() & CAP_SOURCING)
 		{
-			if (!is_capture_mode())
-			{
-				// todo(jasondellaluce): change this once we support multiple enabled event sources
-				if(loaded_plugin)
-				{
-					return run_result::fatal("Can not load multiple plugins with event sourcing capability: '"
-						+ loaded_plugin->name()
-						+ "' already loaded");
-				}
-				loaded_plugin = plugin;
-				m_state->enabled_sources = {plugin->event_source()};
-				m_state->inspector->set_input_plugin(p.m_name, p.m_open_params);
-			}
-
-			// Init filtercheck list for the plugin's source and add the
-			// event-generic filterchecks
-			auto &filterchecks = m_state->plugin_filter_checks[plugin->event_source()];
-			filterchecks.add_filter_check(m_state->inspector->new_generic_filtercheck());
-
-			// Factories that can create filters/formatters for the event source of the plugin.
-			std::shared_ptr<gen_event_filter_factory> filter_factory(new sinsp_filter_factory(m_state->inspector.get(), filterchecks));
-			std::shared_ptr<gen_event_formatter_factory> formatter_factory(new sinsp_evt_formatter_factory(m_state->inspector.get(), filterchecks));
-			if(m_state->config->m_json_output)
-			{
-				formatter_factory->set_output_format(gen_event_formatter::OF_JSON);
-			}
-
-			// note: here we assume that the source index will be the same in
-			// both the falco engine and the sinsp plugin manager. This assumption
-			// stands because the plugin manager stores sources in a vector, and
-			// the syscall source is appended in the engine *after* the sources
-			// coming from plugins. Since this is an implementation-based
-			// assumption, we check this and return an error to spot
-			// regressions in the future. We keep it like this for to avoid the
-			// overhead of additional mappings at runtime, but we may consider
-			// mapping the two indexes under something like std::unordered_map in the future.
-			bool added = false;
-			auto source_idx = m_state->inspector->get_plugin_manager()->source_idx_by_plugin_id(plugin->id(), added);
-			auto source_idx_engine = m_state->engine->add_source(plugin->event_source(), filter_factory, formatter_factory);
-			if (!added || source_idx != source_idx_engine)
-			{
-				return run_result::fatal("Could not add event source in the engine: " + plugin->event_source());
-			}
-		}
-	}
-
-	// Iterate over the plugins with extractor capability and add them to the
-	// filtercheck list of their compatible sources
-	std::vector<const filter_check_info*> filtercheck_info;
-	for(const auto& p : m_state->inspector->get_plugin_manager()->plugins())
-	{
-		if (!(p->caps() & CAP_EXTRACTION))
-		{
-			continue;
-		}
-
-		bool used = false;
-		for (auto &it : m_state->plugin_filter_checks)
-		{
-			// check if the event source is compatible with this plugin
-			if (p->is_source_compatible(it.first))
-			{
-				// check if some fields are overlapping on this event sources
-				filtercheck_info.clear();
-				it.second.get_all_fields(filtercheck_info);
-				for (auto &info : filtercheck_info)
-				{
-					for (int32_t i = 0; i < info->m_nfields; i++)
-					{
-						// check if one of the fields extractable by the plugin
-						// is already provided by another filtercheck for this source
-						std::string fname = info->m_fields[i].m_name;
-						for (auto &f : p->fields())
-						{
-							if (std::string(f.m_name) == fname)
-							{
-								return run_result::fatal(
-									"Plugin '" + p->name()
-									+ "' supports extraction of field '" + fname
-									+ "' that is overlapping for source '" + it.first + "'");
-							}
-						}
-					}
-				}
-
-				// add plugin filterchecks to the event source
-				it.second.add_filter_check(sinsp_plugin::new_filtercheck(p));
-				used = true;
-			}
-		}
-		if (!used)
-		{
-			return run_result::fatal("Plugin '" + p->name()
-				+ "' has field extraction capability but is not compatible with any enabled event source");
+			m_state->enabled_sources.insert(plugin->event_source());
 		}
 	}
 
