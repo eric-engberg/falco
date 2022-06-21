@@ -138,16 +138,9 @@ application::run_result application::do_inspect(
 		// todo(XXX): skip for now and solve this later (not thread safe)
 		// writer.handle();
 
-		// todo(XXX): not thread safe (we need to do this on the main thread and)
-		//            sync with an atomic
-		/* if(m_state->reopen_outputs)
-		{
-			falco_logger::log(LOG_INFO, "SIGUSR1 received, reopening outputs...\n");
-			m_state->outputs->reopen_outputs();
-			m_state->reopen_outputs = false;
-		} */ 
+		// if outputs are re-opening, wait for them to finish
+		while (m_state->reopening_outputs.load(std::memory_order_acquire));
 
-		// todo(XXX): make these thread safe
 		if(m_state->terminate.load(std::memory_order_acquire))
 		{
 			break;
@@ -298,7 +291,10 @@ application::run_result application::process_source_events(std::shared_ptr<sinsp
 		sdropmgr.print_stats();
 	}
 
-	falco_logger::log(LOG_INFO, "Closing event source: " + source + "\n");
+	if (!is_capture_mode)
+	{
+		falco_logger::log(LOG_INFO, "Closing event source '" + source + "'\n");
+	}
 	inspector->close();
 
 	return ret;
@@ -347,7 +343,7 @@ application::run_result application::process_events()
 
 		try 
 		{
-			falco_logger::log(LOG_INFO, "Opening event source: " + source + "\n");
+			falco_logger::log(LOG_INFO, "Opening event source '" + source + "'\n");
 			open_inspector(inspector, source, m_options.userspace);
 			if(source == falco_common::syscall_source && !m_options.all_events)
 			{

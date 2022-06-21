@@ -41,7 +41,7 @@ application::run_result::~run_result()
 application::state::state()
 	: restart(false),
 	  terminate(false),
-	  reopen_outputs(false),
+	  reopening_outputs(false),
 	  enabled_sources({falco_common::syscall_source})
 {
 	config = std::make_shared<falco_configuration>();
@@ -76,8 +76,10 @@ void application::reopen_outputs()
 {
 	if(m_state != nullptr)
 	{
-		// todo(XXX): finish this
-		m_state->reopen_outputs.store(true, std::memory_order_release);
+		m_state->reopening_outputs.store(true, std::memory_order_release);
+		falco_logger::log(LOG_INFO, "SIGUSR1 received, reopening outputs...\n");
+		m_state->outputs->reopen_outputs();
+		m_state->reopening_outputs.store(false, std::memory_order_release);
 	}
 }
 
