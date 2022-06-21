@@ -105,7 +105,7 @@ application::run_result application::do_inspect(
 	num_evts = 0;
 
 	// init drop manager if we are inspecting syscalls
-	if (is_syscall_source)
+	if (is_syscall_source || is_capture_mode)
 	{
 		sdropmgr.init(inspector,
 			m_state->outputs,
@@ -154,8 +154,8 @@ application::run_result application::do_inspect(
 			if(unlikely(ev == nullptr))
 			{
 				timeouts_since_last_success_or_msg++;
-				if(timeouts_since_last_success_or_msg > m_state->config->m_syscall_evt_timeout_max_consecutives
-					&& is_syscall_source)
+				if (timeouts_since_last_success_or_msg > m_state->config->m_syscall_evt_timeout_max_consecutives
+					&& (is_syscall_source || is_capture_mode))
 				{
 					std::string rule = "Falco internal: timeouts notification";
 					std::string msg = rule + ". " + std::to_string(m_state->config->m_syscall_evt_timeout_max_consecutives) + " consecutive timeouts without event.";
@@ -202,7 +202,7 @@ application::run_result application::do_inspect(
 			}
 		}
 
-		if(is_syscall_source && !sdropmgr.process_event(inspector, ev))
+		if((is_syscall_source || is_capture_mode) &&! sdropmgr.process_event(inspector, ev))
 		{
 			return run_result::fatal("Drop manager internal error");
 		}
@@ -286,7 +286,7 @@ application::run_result application::process_source_events(std::shared_ptr<sinsp
 			num_evts / duration);
 	}
 
-	if (source == falco_common::syscall_source)
+	if (source == falco_common::syscall_source || is_capture_mode)
 	{
 		sdropmgr.print_stats();
 	}
@@ -328,6 +328,8 @@ application::run_result application::process_events()
 		{
 			std::this_thread::sleep_for(std::chrono::seconds(m_options.duration_to_tot));
 		}
+
+		m_state->engine->print_stats();
 
 		return ret;
 	}
