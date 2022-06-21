@@ -206,14 +206,23 @@ void falco_engine::load_rules(const string &rules_content, bool verbose, bool al
 			os << warn << std::endl;
 		}
 	}
-	if(!success)
+	if (success)
 	{
-		throw falco_exception(os.str());
+		m_rule_stats_manager.clear();
+		for (const auto &r : m_rules)
+		{
+			m_rule_stats_manager.on_rule_loaded(r);
+		}
+
+		if (verbose && !os.str().empty())
+		{
+			// todo(jasondellaluce): introduce a logging callback in Falco
+			fprintf(stderr, "When reading rules content: %s", os.str().c_str());
+		}
+
+		return;
 	}
-	if (verbose && os.str() != "") {
-		// todo(jasondellaluce): introduce a logging callback in Falco
-		fprintf(stderr, "When reading rules content: %s", os.str().c_str());
-	}
+	throw falco_exception(os.str());
 }
 
 void falco_engine::load_rules_file(const string &rules_filename, bool verbose, bool all_events)
