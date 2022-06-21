@@ -243,7 +243,7 @@ private:
 	// against the set of rules, given the current sampling
 	// ratio/multiplier.
 	//
-	inline bool should_drop_evt();
+	inline bool should_drop_evt() const;
 
 	rule_loader m_rule_loader;
 	indexed_vector<falco_rule> m_rules;

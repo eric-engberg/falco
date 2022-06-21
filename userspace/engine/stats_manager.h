@@ -18,6 +18,8 @@ limitations under the License.
 
 #include <vector>
 #include <string>
+#include <atomic>
+#include <memory>
 #include "falco_rule.h"
 #include "indexed_vector.h"
 
@@ -36,9 +38,15 @@ public:
 	virtual void clear();
 
 	/*!
-		\brief Callback for when a given rule matches an event
+		\brief Callback for when a given rule matches an event.
+		This method is thread-safe.
 	*/
 	virtual void on_event(const falco_rule& rule);
+
+	/*!
+		\brief Callback for when a new rule is loaded in the engine
+	*/
+	virtual void on_rule_loaded(const falco_rule& rule);
 
 	/*!
 		\brief Formats the internal statistics into the out string
@@ -48,7 +56,7 @@ public:
 		std::string& out) const;
 
 private:
-	uint64_t m_total;
-	std::vector<uint64_t> m_by_priority;
-	std::vector<uint64_t> m_by_rule_id;
+	atomic<uint64_t> m_total;
+	std::vector<std::unique_ptr<atomic<uint64_t>>> m_by_priority;
+	std::vector<std::unique_ptr<atomic<uint64_t>>> m_by_rule_id;
 };
